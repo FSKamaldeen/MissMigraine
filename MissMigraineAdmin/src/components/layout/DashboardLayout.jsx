@@ -4,12 +4,14 @@ import { Sidebar } from './Sidebar';
 
 export function DashboardLayout() {
   return (
-    <div className="app-shell">
+    <div className="min-h-screen bg-background flex">
       <Sidebar />
-      <div className="main-column">
+      <div className="flex-1 flex flex-col ml-72 pt-4">
         <Header />
-        <main className="main-content">
-          <Outlet />
+        <main className="flex-1 px-8 pb-8 overflow-y-auto">
+          <div className="max-w-6xl mx-auto">
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>

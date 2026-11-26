@@ -1,64 +1,85 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { getSessionUser, signIn as apiSignIn, signOut as apiSignOut } from '../services/api';
-import { MOCK_ADMIN } from '../data/mockData';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { logAdminAction } from '../services/api';
+import { supabase } from '../lib/supabase';
 
 const AuthContext = createContext(null);
 
-const MOCK_SESSION_KEY = 'mm_admin_session';
-
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
+  const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const sessionUser = await getSessionUser();
-      if (!cancelled && sessionUser) {
-        setUser(sessionUser);
-        setLoading(false);
-        return;
+    if (!supabase) {
+      console.error('Supabase client is null. Check your .env file.');
+      setLoading(false);
+      return;
+    }
+
+    // Load initial session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setUser(session?.user ?? null);
+      setLoading(false);
+    });
+
+    // Listen for auth state changes (login, logout, token refresh)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        setSession(session);
+        setUser(session?.user ?? null);
       }
-      const stored = sessionStorage.getItem(MOCK_SESSION_KEY);
-      if (stored) {
-        try {
-          const parsed = JSON.parse(stored);
-          if (!cancelled) setUser(parsed);
-        } catch {
-          sessionStorage.removeItem(MOCK_SESSION_KEY);
-        }
-      }
-      if (!cancelled) setLoading(false);
-    })();
-    return () => {
-      cancelled = true;
-    };
+    );
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  const signIn = useCallback(async (email, password) => {
-    const { user: signedIn, error } = await apiSignIn(email, password);
+  async function signIn(email, password) {
+    if (!supabase) {
+      return { error: { message: 'Supabase client not initialized' } };
+    }
+
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: email.trim().toLowerCase(),
+      password,
+    });
+
     if (error) return { error };
-    setUser(signedIn);
-    sessionStorage.setItem(MOCK_SESSION_KEY, JSON.stringify(signedIn));
-    return { error: null };
-  }, []);
 
-  const signOut = useCallback(async () => {
-    await apiSignOut();
-    sessionStorage.removeItem(MOCK_SESSION_KEY);
+    // Verify admin role
+    const roles = data.user?.app_metadata?.roles;
+    const singleRole = data.user?.app_metadata?.role;
+    const isAdmin =
+      (Array.isArray(roles) && roles.includes('admin')) ||
+      singleRole === 'admin';
+
+    if (!isAdmin) {
+      await supabase.auth.signOut();
+      return {
+        error: { message: 'Access denied. Administrator privileges required.' },
+      };
+    }
+
+    // System log
+    await logAdminAction('Login', null, { status: 'success' });
+
+    return { error: null, user: data.user };
+  }
+
+  async function signOut() {
+    if (!supabase) return;
+
+    // System log
+    await logAdminAction('Logout', null, { status: 'success' });
+    
+    await supabase.auth.signOut();
     setUser(null);
-  }, []);
+    setSession(null);
+  }
 
   const value = useMemo(
-    () => ({
-      user,
-      loading,
-      signIn,
-      signOut,
-      isAdmin: user?.role === 'admin',
-      demoHint: MOCK_ADMIN.email,
-    }),
-    [user, loading, signIn, signOut],
+    () => ({ user, session, loading, signIn, signOut }),
+    [user, session, loading]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -66,6 +87,6 @@ export function AuthProvider({ children }) {
 
 export function useAuth() {
   const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
+  if (!ctx) throw new Error('useAuth must be used inside <AuthProvider>');
   return ctx;
 }
